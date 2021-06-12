@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 from torch.autograd import Variable
+from torch.optim.lr_scheduler import MultiStepLR
 import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
@@ -29,29 +30,25 @@ model_names = sorted(name for name in models.__dict__
                      and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='Cutmix PyTorch CIFAR-10, CIFAR-100 Training')
-parser.add_argument('--net_type', default='resnet', type=str,
-                    help='baseline network type: resnet')
+parser.add_argument('--net_type', default='resnet18', type=str,
+                    help='baseline network type (options: resnet18, resnet34, resnet50, resnet101, resnet152)')
 parser.add_argument('--augment_type', default='cutmix', type=str,
                     help='data augmentation method (options: cutmix, cutout, mixup, baseline)')
 parser.add_argument('--dataset', dest='dataset', default='cifar10', type=str,
                     help='dataset (options: cifar10, cifar100)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=1000, type=int, metavar='N',
+parser.add_argument('--epochs', default=300, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('-b', '--batch_size', default=128, type=int,
                     metavar='N', help='mini-batch size (default: 256)')
-parser.add_argument('--lr', '--learning-rate', default=0.25, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                     metavar='LR', help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
-parser.add_argument('--weight-decay', '--wd', default=5e-4, type=float,
+parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)')
-parser.add_argument('--depth', default=50, type=int,
-                    help='depth of the network (default: 32)')
-parser.add_argument('--no-bottleneck', dest='bottleneck', action='store_false',
-                    help='to use basicblock for CIFAR datasets (default: bottleneck)')
-parser.set_defaults(bottleneck=True)
+parser.add_argument('--seed', type=int, default=30, help='random seed (default: 250)')
 
 # parameters for mixup
 parser.add_argument('--alpha', default=1., type=float,
@@ -60,7 +57,7 @@ parser.add_argument('--alpha', default=1., type=float,
 # parameters for cutmix
 parser.add_argument('--beta', default=1., type=float,
                     help='hyperparameter beta')
-parser.add_argument('--cutmix_prob', default=1., type=float,
+parser.add_argument('--cutmix_prob', default=1, type=float,
                     help='cutmix probability')
 
 # parameters for cutout
@@ -73,6 +70,9 @@ parser.add_argument('--length', type=int, default=16,
 def main():
     global args
     args = parser.parse_args()
+    # torch.manual_seed(args.seed)
+    # # torch.cuda.manual_seed(args.seed)
+    # torch.cuda.manual_seed_all(args.seed)
     print(args)
 
     normalize = transforms.Normalize(mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
@@ -112,7 +112,19 @@ def main():
 
     print("=> creating model '{}'".format(args.net_type))
 
-    model = RN.ResNet(args.depth, numberofclass, args.bottleneck)  # for ResNet
+    # resnet18, resnet34, resnet50, resnet101, resnet152
+    if args.net_type == 'resnet18':
+        model = RN.ResNet18(numberofclass)
+    elif args.net_type == 'resnet34':
+        model = RN.ResNet34(numberofclass)
+    elif args.net_type == 'resnet50':
+        model = RN.ResNet50(numberofclass)
+    elif args.net_type == 'resnet101':
+        model = RN.ResNet101(numberofclass)
+    elif args.net_type == 'resnet152':
+        model = RN.ResNet152(numberofclass)
+    else:
+        raise Exception('unknown net_type: {}'.format(args.augment_type))
 
     model = torch.nn.DataParallel(model).cuda()
 
@@ -125,6 +137,7 @@ def main():
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay, nesterov=True)
+    # optimizer = MultiStepLR(model_optimizer, milestones=[60, 120, 160], gamma=0.2)
 
     cudnn.benchmark = True
 
@@ -238,7 +251,8 @@ def train(train_loader, model, sumwriter, criterion, optimizer, epoch, batch_siz
                 input, target = input.cuda(), target.cuda()
 
                 # data augmentation
-                if args.beta > 0:
+                r = np.random.rand(1)
+                if args.beta > 0 and r < args.cutmix_prob:
                     # generate mixed sample
                     lam = np.random.beta(args.beta, args.beta)
                     rand_index = torch.randperm(input.size()[0]).cuda()
@@ -253,7 +267,9 @@ def train(train_loader, model, sumwriter, criterion, optimizer, epoch, batch_siz
                     loss = criterion(output, target_a) * lam + criterion(output, target_b) * (1. - lam)
                     train_loss += loss
                 else:
-                    raise Exception('For cutmix, the beta({}) should be bigger than 0'.format(args.beta))
+                    output = model(input)
+                    loss = criterion(output, target)
+                    train_loss += loss
 
                 # Calculate running average of accuracy
                 # _, predicted = torch.max(output.data, 1)
@@ -261,10 +277,12 @@ def train(train_loader, model, sumwriter, criterion, optimizer, epoch, batch_siz
                 # correct += (lam * predicted.eq(target_a.data).cpu().sum().float()
                 #             + (1 - lam) * predicted.eq(target_b.data).cpu().sum().float())
                 # accuracy = correct/total
-                pred = torch.max(output.data, 1)[1]
+                predicted = torch.max(output.data, 1)[1]
                 total += target.size(0)
                 # positive_num += target.data.sum()
-                correct += (pred == target.data).sum().item()
+                # correct += (pred == target.data).sum().item()
+                correct += (lam * predicted.eq(target_a.data).cpu().sum().float()
+                            + (1 - lam) * predicted.eq(target_b.data).cpu().sum().float())
                 accuracy = correct / total
 
                 # compute gradient and do SGD step
@@ -306,10 +324,12 @@ def train(train_loader, model, sumwriter, criterion, optimizer, epoch, batch_siz
                 # correct += (lam * predicted.eq(target_a.data).cpu().sum().float()
                 #             + (1 - lam) * predicted.eq(target_b.data).cpu().sum().float())
                 # accuracy = correct/total
-                pred = torch.max(output.data, 1)[1]
+                predicted = torch.max(output.data, 1)[1]
                 total += target.size(0)
                 # positive_num += target.data.sum()
-                correct += (pred == target.data).sum().item()
+                # correct += (pred == target.data).sum().item()
+                correct += (lam * predicted.eq(target_a.data).cpu().sum().float()
+                            + (1 - lam) * predicted.eq(target_b.data).cpu().sum().float())
                 accuracy = correct / total
 
                 # compute gradient and do SGD step
