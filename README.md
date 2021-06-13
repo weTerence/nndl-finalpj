@@ -1,6 +1,6 @@
 # NNDL-Final-PJ
 
-本项目采用ResNet50作为baseline，对cutout，mixup，cutmix三种数据扩增进行了对比。
+本项目采用ResNet18作为baseline，对cutout，mixup，cutmix三种数据扩增进行了对比。
 
 项目小组成员：靳建华 20210980147，张晓琛 20210980070，马嘉晨 20210980109，付涵 20210980124
 
