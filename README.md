@@ -38,3 +38,4 @@ multigpu train 分别对baseline，cutout，mixup，cutmix三种数据扩增方�
 
 注：在训练过程中，每一个epoch都在测试集合上进行了测试。
 
+PS：使用本地下载的cifa10/cifar100数据集，参考blog（https://blog.csdn.net/qq_44980390/article/details/119895091）
